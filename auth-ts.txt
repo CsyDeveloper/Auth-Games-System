@@ -1,0 +1,50 @@
+import crypto from "crypto";
+import { Collection, ObjectId } from "mongodb";
+
+export interface Player {
+  _id?: ObjectId;
+  name: string;
+  crowns: number;
+  level: number;
+  secretHash: string;
+}
+
+// O segredo é aleatório e longo (256 bits), então SHA-256 basta
+// (bcrypt é para senhas escolhidas por humanos).
+const hash = (secret: string): string =>
+  crypto.createHash("sha256").update(secret).digest("hex");
+
+// Primeira vez que o jogador abre o jogo: cria a conta.
+// O segredo é devolvido UMA vez e só o hash vai para o Mongo.
+export async function register(
+  players: Collection<Player>,
+  name: string
+): Promise<{ id: string; secret: string }> {
+  const secret = crypto.randomBytes(32).toString("hex");
+  const { insertedId } = await players.insertOne({
+    name,
+    crowns: 0,
+    level: 1,
+    secretHash: hash(secret),
+  });
+  return { id: insertedId.toString(), secret }; // o cliente guarda os dois
+}
+
+// Login automático: o cliente manda id + segredo ao conectar.
+export async function login(
+  players: Collection<Player>,
+  id: string,
+  secret: string
+): Promise<Player | null> {
+  if (!ObjectId.isValid(id)) return null;
+
+  const player = await players.findOne({ _id: new ObjectId(id) });
+  if (!player) return null;
+
+  const expected = Buffer.from(player.secretHash, "hex");
+  const received = Buffer.from(hash(secret), "hex");
+
+  // Comparação em tempo constante, para não vazar informação por tempo de resposta
+  if (expected.length !== received.length) return null;
+  return crypto.timingSafeEqual(expected, received) ? player : null;
+}
